@@ -159,10 +159,10 @@ function initWizard() {
 async function handleDiscover(wizard, findBtn) {
   findBtn.disabled = true;
 
-  const step = createLoadingStep(wizard, "Searching today's news and matching Kalshi markets… (~45 s)");
+  const step = createLoadingStep(wizard, "Searching today's news and matching Kalshi markets… (~1-2 min)");
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 180000);
+  const timeout = setTimeout(() => controller.abort(), 600000);
 
   try {
     const res = await fetch("/api/discover", {
@@ -245,10 +245,10 @@ function buildOppsContent(wizard, opps) {
 // ---------------------------------------------------------------------------
 
 async function handleResearch(wizard, opp) {
-  const step = createLoadingStep(wizard, `Researching ${opp.ticker}… (~30 s)`);
+  const step = createLoadingStep(wizard, `Researching ${opp.ticker}… (~30-60 s)`);
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 120000);
+  const timeout = setTimeout(() => controller.abort(), 300000);
 
   try {
     const res = await fetch("/api/research", {

@@ -35,26 +35,25 @@ def test_signal_schema_disables_additional_properties():
 
 
 def test_generate_signal_parses_response():
-    signal_json = json.dumps(
-        {
-            "market_ticker": "TICKER",
-            "side": "yes",
-            "confidence": 0.8,
-            "size_usd": 5.0,
-            "edge": 0.1,
-            "reasoning": "Some reasoning",
-            "sources": ["https://example.com"],
-            "skip": False,
-            "skip_reason": None,
-        }
-    )
+    signal_data = {
+        "market_ticker": "TICKER",
+        "side": "yes",
+        "confidence": 0.8,
+        "size_usd": 5.0,
+        "edge": 0.1,
+        "reasoning": "Some reasoning",
+        "sources": ["https://example.com"],
+        "skip": False,
+        "skip_reason": None,
+    }
 
-    text_block = MagicMock()
-    text_block.type = "text"
-    text_block.text = signal_json
+    tool_block = MagicMock()
+    tool_block.type = "tool_use"
+    tool_block.name = "submit_signal"
+    tool_block.input = signal_data
 
     response = MagicMock()
-    response.content = [text_block]
+    response.content = [tool_block]
 
     client = MagicMock()
     client.messages.create.return_value = response
@@ -69,3 +68,4 @@ def test_generate_signal_parses_response():
     call_kwargs = client.messages.create.call_args.kwargs
     assert call_kwargs["model"] == "claude-sonnet-4-6"
     assert any(tool["type"] == "web_search_20260209" for tool in call_kwargs["tools"])
+    assert any(t.get("name") == "submit_signal" for t in call_kwargs["tools"])

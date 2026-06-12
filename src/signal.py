@@ -42,10 +42,9 @@ Only recommend a trade when:
 If you don't have a real edge, set "skip" to true and explain why in \
 "skip_reason" - skipping is the correct default outcome for most markets.
 
-Respond with a single JSON object matching the required schema. "side" is the \
-side you'd buy ("yes" or "no"). "size_usd" is the dollar amount you'd risk, \
-which must not exceed the max bet size given in the prompt. "sources" must \
-list the URLs of the web pages that informed your estimate.\
+After your research, call the submit_signal tool with your conclusion. \
+"side" is the side you'd buy ("yes" or "no"). "size_usd" must not exceed \
+the max bet size given in the prompt. "sources" must list the URLs you used.\
 """
 
 
@@ -86,18 +85,28 @@ def generate_signal(
     """
     client = client or anthropic.Anthropic()
 
+    tools: list[Any] = [
+        {"type": "web_search_20260209", "name": "web_search"},
+        {
+            "name": "submit_signal",
+            "description": "Submit the final trading signal after completing research.",
+            "input_schema": _signal_schema(),
+        },
+    ]
+
     response = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        thinking={"type": "adaptive"},
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": _build_prompt(market)}],
-        tools=[{"type": "web_search_20260209", "name": "web_search"}],
-        output_config={"format": {"type": "json_schema", "schema": _signal_schema()}},
+        tools=tools,
     )
 
-    text = next(block.text for block in reversed(response.content) if block.type == "text")
-    return TradeSignal.model_validate_json(text)
+    for block in reversed(response.content):
+        if block.type == "tool_use" and block.name == "submit_signal":
+            return TradeSignal.model_validate(block.input)
+
+    raise ValueError("Claude did not call submit_signal — check model output")
 
 
 def _build_prompt(market: dict[str, Any]) -> str:

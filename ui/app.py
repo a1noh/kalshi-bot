@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import anthropic as _anthropic
+from anthropic import BadRequestError as _BadRequestError
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -106,9 +107,22 @@ Step 3 — Evaluate edge: estimate the true probability, compare to the market \
 mid price. Only include markets where you have clear, well-sourced edge \
 (your probability significantly differs from the current price).
 
-Return ONLY markets with verified, real tickers you found via search. \
-If you can't verify a ticker, skip it. Return [] if nothing has genuine edge.\
+After your research, call submit_opportunities with your findings. \
+Only include markets with verified, real tickers you found via search. \
+Pass an empty list for opportunities if nothing has genuine edge.\
 """
+
+
+def _anthropic_error_msg(exc: Exception) -> str:
+    """Return a human-readable message from an Anthropic API error."""
+    if isinstance(exc, _BadRequestError):
+        body = getattr(exc, "body", None) or {}
+        msg = (body.get("error") or {}).get("message", "")
+        if "credit balance" in msg.lower():
+            return "Anthropic API credits depleted — add credits at console.anthropic.com"
+        if msg:
+            return f"Anthropic API error: {msg}"
+    return str(exc)
 
 
 def _discovery_schema() -> dict[str, Any]:
@@ -141,11 +155,19 @@ def _discovery_schema() -> dict[str, Any]:
 
 def _run_discovery(max_bet_usd: float) -> list[dict[str, Any]]:
     """Call Claude to find today's hot Kalshi markets. Returns raw list from Claude."""
+    import json as _json
     client = _anthropic.Anthropic()
+    tools: list[Any] = [
+        {"type": "web_search_20260209", "name": "web_search"},
+        {
+            "name": "submit_opportunities",
+            "description": "Submit the list of discovered Kalshi market opportunities after completing research.",
+            "input_schema": _discovery_schema(),
+        },
+    ]
     response = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=4096,
-        thinking={"type": "adaptive"},
         system=_DISCOVER_SYSTEM,
         messages=[{
             "role": "user",
@@ -153,15 +175,18 @@ def _run_discovery(max_bet_usd: float) -> list[dict[str, Any]]:
                 f"Max bet size per trade: ${max_bet_usd}. "
                 "Find today's top prediction market opportunities on Kalshi. "
                 "Search current news, find specific verified Kalshi tickers, "
-                "and return only markets where you have real edge."
+                "and call submit_opportunities with your findings."
             ),
         }],
-        tools=[{"type": "web_search_20260209", "name": "web_search"}],
-        output_config={"format": {"type": "json_schema", "schema": _discovery_schema()}},
+        tools=tools,
     )
-    text = next(b.text for b in reversed(response.content) if b.type == "text")
-    import json
-    return json.loads(text).get("opportunities", [])
+    for block in reversed(response.content):
+        if block.type == "tool_use" and block.name == "submit_opportunities":
+            data = block.input
+            if isinstance(data, str):
+                data = _json.loads(data)
+            return data.get("opportunities", [])
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +235,7 @@ def discover() -> list[dict[str, Any]]:
     try:
         raw = _run_discovery(max_bet)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Discovery failed: {exc}") from exc
+        raise HTTPException(status_code=502, detail=_anthropic_error_msg(exc)) from exc
 
     results = []
     for opp in raw:
@@ -247,7 +272,10 @@ def research(body: ResearchRequest) -> dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Order book fetch failed: {exc}") from exc
 
-    signal = generate_signal({**market, "order_book": order_book})
+    try:
+        signal = generate_signal({**market, "order_book": order_book})
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=_anthropic_error_msg(exc)) from exc
     return signal.model_dump()
 
 
