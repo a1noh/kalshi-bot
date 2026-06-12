@@ -19,6 +19,12 @@ src/
   risk.py                   # gate signals against MIN_CONFIDENCE/MAX_BET_USD/MAX_OPEN_POSITIONS/DAILY_LOSS_LIMIT_USD
   executor.py               # place/cancel orders via Kalshi API, respects DRY_RUN
   logger.py                 # structured JSON logging + SQLite trade log
+ui/
+  app.py                   # FastAPI dashboard: serves index.html + /api/trades + /api/summary
+  static/
+    index.html             # single-page dashboard (summary cards + trades table)
+    style.css              # dark theme
+    app.js                 # fetch() polling every 5s, DOM rendering
 tests/                      # pytest suite, no live network calls
 .github/workflows/ci.yml     # ruff + pytest on push/PR
 Dockerfile / docker-compose.yml
@@ -41,6 +47,9 @@ Dockerfile / docker-compose.yml
 - [x] Live smoke test - `python main.py` with `DRY_RUN=true` connects to the
       real Kalshi API (RSA-PSS auth verified) and scans markets concurrently
       with no crashes.
+- [x] Minimal web dashboard (`ui/`) - FastAPI + vanilla JS, read-only; run
+      with `uvicorn ui.app:app --reload` and open `http://localhost:8000`.
+      25 tests pass (`pytest -q`).
 
 ### Known characteristic: scan duration
 
@@ -53,7 +62,6 @@ isn't a bug (the loop just runs back-to-back rather than sleeping), but if
 faster cycles are needed later, consider narrowing `get_markets()` with a
 `series_ticker`/category filter to a smaller universe of markets.
 
-- [ ] Future - web UI (dashboard for positions, signals, trade history)
 - [ ] Future - Railway CD: connect this repo to a Railway project, set the
       env vars from `.env.example` as Railway service variables, and deploy
       on push to `main` (Railway auto-builds from the `Dockerfile`)

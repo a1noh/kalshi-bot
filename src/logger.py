@@ -167,6 +167,25 @@ def get_daily_pnl(db_path: str | None = None, day: datetime | None = None) -> fl
         return float(row[0])
 
 
+def get_recent_trades(limit: int = 50, db_path: str | None = None) -> list[dict[str, Any]]:
+    """Fetch the most recently recorded trades.
+
+    Args:
+        limit: Maximum number of rows to return.
+        db_path: Path to the SQLite database file. Defaults to `DB_PATH`.
+
+    Returns:
+        A list of trade row dicts ordered by `created_at` descending.
+    """
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM trades ORDER BY created_at DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
 def get_open_position_count(db_path: str | None = None) -> int:
     """Count trades currently recorded as open.
 
