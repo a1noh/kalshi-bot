@@ -1,38 +1,52 @@
 const REFRESH_MS = 5000;
-let maxBetUsd = 10; // updated from /api/summary
+let maxBetUsd = 10;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatUsd(value) {
-  if (value === null || value === undefined) return "-";
-  return `$${Number(value).toFixed(2)}`;
+function formatUsd(v) {
+  return v == null ? "-" : `$${Number(v).toFixed(2)}`;
 }
 
-function pct(value) {
-  if (value === null || value === undefined) return "-";
-  const sign = value >= 0 ? "+" : "";
-  return `${sign}${(value * 100).toFixed(1)}%`;
+function pct(v) {
+  if (v == null) return "-";
+  return `${v >= 0 ? "+" : ""}${(v * 100).toFixed(1)}%`;
 }
 
-// Compute 3 bet-size options: conservative, recommended, full
-function betSizes(recommendedUsd) {
-  const conservative = Math.max(1, Math.round((maxBetUsd * 0.25) * 100) / 100);
+function calcBetSizes(recommendedUsd) {
+  const conservative = Math.max(1, Math.floor(maxBetUsd * 0.25));
   const recommended  = Math.min(Math.max(1, Math.round(recommendedUsd * 100) / 100), maxBetUsd);
   const full         = maxBetUsd;
-  // deduplicate and sort
-  return [...new Set([conservative, recommended, full])].sort((a, b) => a - b);
+  const unique = [...new Set([conservative, recommended, full])].sort((a, b) => a - b);
+  return unique.map(amount => ({
+    amount,
+    recommended: amount === recommended,
+    label: amount === recommended ? "recommended ★"
+         : amount === full        ? "max"
+         :                         "conservative",
+  }));
+}
+
+async function apiPost(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || res.statusText);
+  }
+  return res.json();
 }
 
 // ---------------------------------------------------------------------------
-// Summary polling
+// Summary + trade history polling
 // ---------------------------------------------------------------------------
 
 async function refreshSummary() {
-  const res = await fetch("/api/summary");
-  const data = await res.json();
-
+  const data = await fetch("/api/summary").then(r => r.json());
   maxBetUsd = data.max_bet_usd ?? 10;
 
   const badge = document.getElementById("mode-badge");
@@ -47,12 +61,11 @@ async function refreshSummary() {
 }
 
 async function refreshTrades() {
-  const res = await fetch("/api/trades?limit=50");
-  const trades = await res.json();
+  const trades = await fetch("/api/trades?limit=50").then(r => r.json());
   const body = document.getElementById("trades-body");
   body.replaceChildren();
 
-  if (trades.length === 0) {
+  if (!trades.length) {
     const row = document.createElement("tr");
     const cell = document.createElement("td");
     cell.colSpan = 8;
@@ -62,26 +75,17 @@ async function refreshTrades() {
     return;
   }
 
-  for (const trade of trades) {
+  for (const t of trades) {
     const row = document.createElement("tr");
-    const cells = [
-      trade.created_at,
-      trade.market_ticker,
-      trade.side,
-      formatUsd(trade.size_usd),
-      trade.confidence?.toFixed(2) ?? "-",
-      trade.edge?.toFixed(3) ?? "-",
-      trade.status,
-      trade.reasoning ?? "",
-    ];
-    cells.forEach((value, index) => {
-      const cell = document.createElement("td");
-      cell.textContent = value;
-      if (index === cells.length - 1) {
-        cell.className = "reasoning";
-        cell.title = value;
-      }
-      row.appendChild(cell);
+    [
+      t.created_at, t.market_ticker, t.side, formatUsd(t.size_usd),
+      t.confidence?.toFixed(2) ?? "-", t.edge?.toFixed(3) ?? "-",
+      t.status, t.reasoning ?? "",
+    ].forEach((val, i) => {
+      const td = document.createElement("td");
+      td.textContent = val;
+      if (i === 7) { td.className = "reasoning"; td.title = val; }
+      row.appendChild(td);
     });
     body.appendChild(row);
   }
@@ -96,18 +100,66 @@ refreshAll();
 setInterval(refreshAll, REFRESH_MS);
 
 // ---------------------------------------------------------------------------
-// Discover
+// Wizard helpers
 // ---------------------------------------------------------------------------
 
-document.getElementById("discover-btn").addEventListener("click", async () => {
-  const btn = document.getElementById("discover-btn");
-  const statusEl = document.getElementById("discover-status");
-  const listEl = document.getElementById("opportunities-list");
+function createStep(wizard) {
+  const div = document.createElement("div");
+  div.className = "step";
+  wizard.appendChild(div);
+  setTimeout(() => div.scrollIntoView({ behavior: "smooth", block: "nearest" }), 50);
+  return div;
+}
 
-  btn.disabled = true;
-  statusEl.textContent = "Searching today's news and matching Kalshi markets… (~45 s)";
-  statusEl.className = "action-status";
-  listEl.replaceChildren();
+function createLoadingStep(wizard, msg) {
+  const step = createStep(wizard);
+  const p = document.createElement("p");
+  p.className = "step-loading";
+  p.textContent = msg;
+  step.appendChild(p);
+  return step;
+}
+
+function setStepError(step, msg) {
+  step.replaceChildren();
+  const p = document.createElement("p");
+  p.className = "step-error";
+  p.textContent = `Error: ${msg}`;
+  step.appendChild(p);
+}
+
+function makeRestartBtn(wizard) {
+  const btn = document.createElement("button");
+  btn.className = "step-btn";
+  btn.textContent = "Find More Markets";
+  btn.addEventListener("click", () => initWizard());
+  return btn;
+}
+
+// ---------------------------------------------------------------------------
+// Step 0 — initWizard
+// ---------------------------------------------------------------------------
+
+function initWizard() {
+  const wizard = document.getElementById("wizard");
+  wizard.replaceChildren();
+
+  const step = createStep(wizard);
+  const btn = document.createElement("button");
+  btn.className = "big-btn";
+  btn.textContent = "Find Hot Markets";
+  btn.addEventListener("click", () => handleDiscover(wizard, btn));
+  step.appendChild(btn);
+}
+
+// ---------------------------------------------------------------------------
+// Step 1 — discover
+// ---------------------------------------------------------------------------
+
+async function handleDiscover(wizard, findBtn) {
+  findBtn.disabled = true;
+
+  const step = createLoadingStep(wizard, "Searching today's news and matching Kalshi markets… (~45 s)");
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 180000);
@@ -120,168 +172,80 @@ document.getElementById("discover-btn").addEventListener("click", async () => {
       signal: controller.signal,
     });
     clearTimeout(timeout);
-
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(err.detail || res.statusText);
     }
-
     const opps = await res.json();
-
-    if (opps.length === 0) {
-      statusEl.textContent = "No clear opportunities found right now — try again later.";
-      statusEl.className = "action-status";
-    } else {
-      statusEl.className = "action-status hidden";
-      opps.forEach(opp => listEl.appendChild(buildOpportunityCard(opp)));
-    }
+    step.replaceChildren(buildOppsContent(wizard, opps));
   } catch (err) {
     clearTimeout(timeout);
-    statusEl.textContent = `Error: ${err.message}`;
-    statusEl.className = "action-status error";
-  } finally {
-    btn.disabled = false;
+    setStepError(step, err.message);
+    findBtn.disabled = false;
   }
-});
+}
 
-function buildOpportunityCard(opp) {
-  const card = document.createElement("div");
-  card.className = "opp-card";
+function buildOppsContent(wizard, opps) {
+  const div = document.createElement("div");
 
-  // Header row: badge + ticker + meta
-  const header = document.createElement("div");
-  header.className = "opp-header";
+  if (!opps.length) {
+    const note = document.createElement("p");
+    note.className = "step-note";
+    note.textContent = "No clear opportunities found right now — try again in a bit.";
+    div.appendChild(note);
+    div.appendChild(makeRestartBtn(wizard));
+    return div;
+  }
 
-  const badge = document.createElement("span");
-  badge.className = `badge ${opp.side}`;
-  badge.textContent = `BUY ${opp.side.toUpperCase()}`;
-  header.appendChild(badge);
+  const label = document.createElement("p");
+  label.className = "step-label";
+  label.textContent = `Found ${opps.length} market${opps.length !== 1 ? "s" : ""} with potential edge — choose one to research:`;
+  div.appendChild(label);
 
-  const ticker = document.createElement("span");
-  ticker.className = "opp-ticker";
-  ticker.textContent = opp.ticker;
-  header.appendChild(ticker);
+  const list = document.createElement("div");
+  list.className = "opp-list";
 
-  const meta = document.createElement("span");
-  meta.className = "opp-meta";
-  const midStr = opp.mid_price != null ? ` · mid ${(opp.mid_price * 100).toFixed(0)}¢` : "";
-  meta.textContent = `${(opp.confidence * 100).toFixed(0)}% conf · edge ${pct(opp.edge)}${midStr}`;
-  header.appendChild(meta);
-
-  card.appendChild(header);
-
-  // Title
-  const title = document.createElement("p");
-  title.className = "opp-title";
-  title.textContent = opp.title;
-  card.appendChild(title);
-
-  // Reasoning (truncatable)
-  const reasoning = document.createElement("p");
-  reasoning.className = "opp-reasoning";
-  reasoning.textContent = opp.reasoning;
-  card.appendChild(reasoning);
-
-  // Bet row
-  const betRow = document.createElement("div");
-  betRow.className = "opp-bet-row";
-
-  const betLabel = document.createElement("span");
-  betLabel.className = "opp-bet-label";
-  betLabel.textContent = "Bet:";
-  betRow.appendChild(betLabel);
-
-  const sizes = betSizes(opp.size_usd);
-  const recommendedSize = Math.min(Math.max(1, Math.round(opp.size_usd * 100) / 100), maxBetUsd);
-
-  sizes.forEach(size => {
+  opps.forEach((opp, i) => {
     const btn = document.createElement("button");
-    btn.className = "bet-size-btn";
-    btn.textContent = `$${size % 1 === 0 ? size : size.toFixed(2)}`;
-    if (size === recommendedSize) {
-      btn.classList.add("recommended");
-      btn.title = "Claude's recommended size";
-    }
+    btn.className = "opp-row-btn";
 
-    btn.addEventListener("click", async () => {
-      // disable all bet buttons on this card
-      card.querySelectorAll(".bet-size-btn").forEach(b => { b.disabled = true; });
+    const lbl = document.createElement("span");
+    lbl.className = "opp-row-lbl";
+    lbl.textContent = String.fromCharCode(65 + i); // A, B, C…
 
-      const resultEl = card.querySelector(".opp-result");
-      resultEl.textContent = `Placing ${opp.side.toUpperCase()} ${opp.ticker} $${size}…`;
-      resultEl.className = "opp-result";
+    const title = document.createElement("span");
+    title.className = "opp-row-title";
+    title.textContent = opp.title;
 
-      try {
-        const res = await fetch("/api/bet", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ticker: opp.ticker, side: opp.side, size_usd: size }),
-        });
+    const badge = document.createElement("span");
+    badge.className = `badge ${opp.side}`;
+    badge.textContent = `BUY ${opp.side.toUpperCase()}`;
 
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({ detail: res.statusText }));
-          throw new Error(errData.detail || res.statusText);
-        }
+    const meta = document.createElement("span");
+    meta.className = "opp-row-meta";
+    meta.textContent = `${(opp.confidence * 100).toFixed(0)}% · ${pct(opp.edge)}`;
 
-        const data = await res.json();
-        const order = data.order || {};
-        const dryRun = data.dry_run;
-        const parts = [
-          dryRun ? "DRY RUN" : "PLACED",
-          `${order.count ?? "?"} contract(s) @ ${order.yes_price_dollars ?? order.no_price_dollars ?? "?"}`,
-        ].filter(Boolean);
-        resultEl.textContent = parts.join(" · ");
-        resultEl.className = `opp-result ${dryRun ? "dry-run" : "success"}`;
+    btn.append(lbl, title, badge, meta);
 
-        refreshTrades().catch(console.error);
-      } catch (err) {
-        resultEl.textContent = `Rejected: ${err.message}`;
-        resultEl.className = "opp-result error";
-        card.querySelectorAll(".bet-size-btn").forEach(b => { b.disabled = false; });
-      }
+    btn.addEventListener("click", () => {
+      list.querySelectorAll(".opp-row-btn").forEach(b => { b.disabled = true; });
+      btn.classList.add("selected");
+      handleResearch(wizard, opp);
     });
 
-    betRow.appendChild(btn);
+    list.appendChild(btn);
   });
 
-  card.appendChild(betRow);
-
-  // Result line (hidden until bet placed)
-  const resultEl = document.createElement("div");
-  resultEl.className = "opp-result hidden";
-  card.appendChild(resultEl);
-
-  return card;
+  div.appendChild(list);
+  return div;
 }
 
 // ---------------------------------------------------------------------------
-// Manual research
+// Step 2 — research
 // ---------------------------------------------------------------------------
 
-let selectedSide = "yes";
-
-function setSide(side) {
-  selectedSide = side;
-  document.getElementById("side-yes-btn").classList.toggle("active", side === "yes");
-  document.getElementById("side-no-btn").classList.toggle("active", side === "no");
-}
-
-document.getElementById("side-yes-btn").addEventListener("click", () => setSide("yes"));
-document.getElementById("side-no-btn").addEventListener("click", () => setSide("no"));
-
-document.getElementById("research-btn").addEventListener("click", async () => {
-  const ticker = document.getElementById("research-ticker").value.trim().toUpperCase();
-  if (!ticker) return;
-
-  const btn = document.getElementById("research-btn");
-  const statusEl = document.getElementById("research-status");
-  const resultEl = document.getElementById("research-result");
-
-  btn.disabled = true;
-  statusEl.textContent = "Researching… Claude is searching the web (~30 s)";
-  statusEl.className = "action-status";
-  resultEl.className = "result-card hidden";
-  resultEl.replaceChildren();
+async function handleResearch(wizard, opp) {
+  const step = createLoadingStep(wizard, `Researching ${opp.ticker}… (~30 s)`);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 120000);
@@ -290,131 +254,133 @@ document.getElementById("research-btn").addEventListener("click", async () => {
     const res = await fetch("/api/research", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticker }),
+      body: JSON.stringify({ ticker: opp.ticker }),
       signal: controller.signal,
     });
     clearTimeout(timeout);
-
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(err.detail || res.statusText);
     }
-
-    const data = await res.json();
-    renderResearchResult(resultEl, data);
-    statusEl.className = "action-status hidden";
-    resultEl.className = "result-card";
-
-    // pre-fill manual bet form
-    document.getElementById("bet-ticker").value = data.market_ticker;
-    if (!data.skip) setSide(data.side);
+    const signal = await res.json();
+    step.replaceChildren(buildSignalContent(wizard, opp, signal));
   } catch (err) {
     clearTimeout(timeout);
-    statusEl.textContent = `Error: ${err.message}`;
-    statusEl.className = "action-status error";
-  } finally {
-    btn.disabled = false;
+    setStepError(step, err.message);
   }
-});
+}
 
-function renderResearchResult(el, signal) {
-  el.replaceChildren();
+function buildSignalContent(wizard, opp, signal) {
+  const div = document.createElement("div");
 
+  // Header: badge + ticker + meta
   const header = document.createElement("div");
-  header.className = "result-header";
+  header.className = "signal-header";
 
   const badge = document.createElement("span");
-  if (signal.skip) {
-    badge.className = "badge skip";
-    badge.textContent = "SKIP";
-  } else {
-    badge.className = `badge ${signal.side}`;
-    badge.textContent = `BUY ${signal.side.toUpperCase()}`;
-  }
-  header.appendChild(badge);
+  badge.className = `badge ${signal.skip ? "skip" : signal.side}`;
+  badge.textContent = signal.skip ? "SKIP" : `BUY ${signal.side.toUpperCase()}`;
+
+  const ticker = document.createElement("span");
+  ticker.className = "signal-ticker";
+  ticker.textContent = opp.ticker;
 
   const meta = document.createElement("span");
-  meta.className = "result-meta";
-  meta.textContent = [
-    `confidence ${(signal.confidence * 100).toFixed(0)}%`,
-    `edge ${pct(signal.edge)}`,
-    signal.skip_reason ? `skip: ${signal.skip_reason}` : null,
-  ].filter(Boolean).join(" · ");
-  header.appendChild(meta);
-  el.appendChild(header);
+  meta.className = "signal-meta";
+  const midStr = opp.mid_price != null ? ` · mid ${(opp.mid_price * 100).toFixed(0)}¢` : "";
+  meta.textContent = `${(signal.confidence * 100).toFixed(0)}% conf · edge ${pct(signal.edge)}${midStr}`;
 
+  header.append(badge, ticker, meta);
+  div.appendChild(header);
+
+  // Reasoning
   const reasoning = document.createElement("p");
-  reasoning.className = "result-reasoning";
+  reasoning.className = "signal-reasoning";
   reasoning.textContent = signal.reasoning;
-  el.appendChild(reasoning);
+  div.appendChild(reasoning);
 
-  if (signal.sources && signal.sources.length > 0) {
-    const sourcesLabel = document.createElement("p");
-    sourcesLabel.className = "result-sources-label";
-    sourcesLabel.textContent = "Sources";
-    el.appendChild(sourcesLabel);
+  if (signal.skip) {
+    const note = document.createElement("p");
+    note.className = "step-note";
+    note.textContent = signal.skip_reason || "No trade recommended on this market.";
+    div.appendChild(note);
+    div.appendChild(makeRestartBtn(wizard));
+    return div;
+  }
 
-    const list = document.createElement("ul");
-    list.className = "result-sources";
-    for (const url of signal.sources) {
-      const li = document.createElement("li");
-      const a = document.createElement("a");
-      a.href = url;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      a.textContent = url;
-      li.appendChild(a);
-      list.appendChild(li);
-    }
-    el.appendChild(list);
+  // Bet size tiles
+  const betLabel = document.createElement("p");
+  betLabel.className = "step-label";
+  betLabel.textContent = "How much to bet?";
+  div.appendChild(betLabel);
+
+  const betOptions = document.createElement("div");
+  betOptions.className = "bet-options";
+
+  calcBetSizes(signal.size_usd).forEach(({ amount, label, recommended }) => {
+    const btn = document.createElement("button");
+    btn.className = recommended ? "bet-opt-btn recommended" : "bet-opt-btn";
+
+    const amt = document.createElement("span");
+    amt.className = "bet-opt-amount";
+    amt.textContent = `$${amount % 1 === 0 ? amount : amount.toFixed(2)}`;
+
+    const lbl = document.createElement("span");
+    lbl.className = "bet-opt-label";
+    lbl.textContent = label;
+
+    btn.append(amt, lbl);
+
+    btn.addEventListener("click", () => {
+      betOptions.querySelectorAll(".bet-opt-btn").forEach(b => { b.disabled = true; });
+      handleBet(wizard, opp.ticker, signal.side, amount);
+    });
+
+    betOptions.appendChild(btn);
+  });
+
+  div.appendChild(betOptions);
+  return div;
+}
+
+// ---------------------------------------------------------------------------
+// Step 3 — place bet
+// ---------------------------------------------------------------------------
+
+async function handleBet(wizard, ticker, side, size_usd) {
+  const step = createLoadingStep(wizard, `Placing ${side.toUpperCase()} bet on ${ticker}…`);
+
+  try {
+    const result = await apiPost("/api/bet", { ticker, side, size_usd });
+    const order = result.order || {};
+    const dryRun = result.dry_run;
+
+    step.replaceChildren();
+
+    const resultLine = document.createElement("p");
+    resultLine.className = `bet-result ${dryRun ? "dry-run" : "success"}`;
+    const price = order.yes_price_dollars ?? order.no_price_dollars;
+    resultLine.textContent = [
+      dryRun ? "DRY RUN" : "✓ PLACED",
+      `${order.count ?? "?"} contract(s)`,
+      price ? `@ $${price}` : null,
+    ].filter(Boolean).join(" · ");
+    step.appendChild(resultLine);
+    step.appendChild(makeRestartBtn(wizard));
+
+    refreshTrades().catch(console.error);
+  } catch (err) {
+    step.replaceChildren();
+    const errLine = document.createElement("p");
+    errLine.className = "bet-result error";
+    errLine.textContent = `Rejected: ${err.message}`;
+    step.appendChild(errLine);
+    step.appendChild(makeRestartBtn(wizard));
   }
 }
 
 // ---------------------------------------------------------------------------
-// Manual bet
+// Boot
 // ---------------------------------------------------------------------------
 
-document.getElementById("bet-btn").addEventListener("click", async () => {
-  const ticker = document.getElementById("bet-ticker").value.trim().toUpperCase();
-  const size_usd = parseFloat(document.getElementById("bet-size").value);
-  if (!ticker || !size_usd || size_usd <= 0) return;
-
-  const btn = document.getElementById("bet-btn");
-  const statusEl = document.getElementById("bet-status");
-
-  btn.disabled = true;
-  statusEl.textContent = `Placing ${selectedSide.toUpperCase()} bet on ${ticker}…`;
-  statusEl.className = "action-status";
-
-  try {
-    const res = await fetch("/api/bet", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ticker, side: selectedSide, size_usd }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new Error(err.detail || res.statusText);
-    }
-
-    const data = await res.json();
-    const order = data.order || {};
-    const dryRun = data.dry_run;
-    const parts = [
-      dryRun ? "DRY RUN" : "PLACED",
-      `${order.side?.toUpperCase()} ${order.ticker}`,
-      `${order.count} contract(s)`,
-      order.yes_price_dollars ? `@ $${order.yes_price_dollars}` : order.no_price_dollars ? `@ $${order.no_price_dollars}` : "",
-    ].filter(Boolean);
-    statusEl.textContent = parts.join(" · ");
-    statusEl.className = `action-status ${dryRun ? "dry-run" : "success"}`;
-
-    refreshTrades().catch(console.error);
-  } catch (err) {
-    statusEl.textContent = `Rejected: ${err.message}`;
-    statusEl.className = "action-status error";
-  } finally {
-    btn.disabled = false;
-  }
-});
+initWizard();

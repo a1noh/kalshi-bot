@@ -31,69 +31,19 @@
     </div>
   </section>
 
-  <!-- ── Discover ────────────────────────────────────────────────── -->
-  <section class="action-section">
-    <h2>Find Hot Markets</h2>
-    <p class="action-hint">
-      Claude searches today's news, finds Kalshi markets with edge, and returns
-      bet options — all in one click (~45 s).
-    </p>
-    <div class="action-form">
-      <button id="discover-btn" class="primary-btn">Find Hot Markets</button>
-    </div>
-    <div id="discover-status" class="action-status hidden"></div>
-    <div id="opportunities-list"></div>
-  </section>
+  <div id="wizard"></div>
 
-  <!-- ── Manual research ────────────────────────────────────────── -->
-  <section class="action-section">
-    <h2>Research a Specific Market</h2>
-    <p class="action-hint">Enter a ticker — Claude will web-search and return a signal (~30 s).</p>
-    <div class="action-form">
-      <input id="research-ticker" type="text" placeholder="e.g. KXBTCD-26DEC3130" spellcheck="false" />
-      <button id="research-btn">Research</button>
-    </div>
-    <div id="research-status" class="action-status hidden"></div>
-    <div id="research-result" class="result-card hidden"></div>
-  </section>
-
-  <!-- ── Manual bet ─────────────────────────────────────────────── -->
-  <section class="action-section">
-    <h2>Place a Bet Manually</h2>
-    <p class="action-hint">Bypasses confidence check; all other risk limits still apply.</p>
-    <div class="action-form">
-      <input id="bet-ticker" type="text" placeholder="e.g. KXBTCD-26DEC3130" spellcheck="false" />
-      <div class="side-toggle">
-        <button class="side-btn active" id="side-yes-btn">YES</button>
-        <button class="side-btn" id="side-no-btn">NO</button>
-      </div>
-      <div class="size-wrap">
-        <span class="size-prefix">$</span>
-        <input id="bet-size" type="number" min="1" step="1" value="5" />
-      </div>
-      <button id="bet-btn">Place Bet</button>
-    </div>
-    <div id="bet-status" class="action-status hidden"></div>
-  </section>
-
-  <!-- ── Trade history ──────────────────────────────────────────── -->
-  <section>
+  <section id="history-section">
     <h2>Recent Trades</h2>
     <table>
       <thead>
         <tr>
-          <th>Time (UTC)</th>
-          <th>Ticker</th>
-          <th>Side</th>
-          <th>Size ($)</th>
-          <th>Confidence</th>
-          <th>Edge</th>
-          <th>Status</th>
-          <th>Reasoning</th>
+          <th>Time (UTC)</th><th>Ticker</th><th>Side</th><th>Size ($)</th>
+          <th>Confidence</th><th>Edge</th><th>Status</th><th>Reasoning</th>
         </tr>
       </thead>
       <tbody id="trades-body">
-        <tr><td colspan="8">Loading...</td></tr>
+        <tr><td colspan="8">Loading…</td></tr>
       </tbody>
     </table>
   </section>
