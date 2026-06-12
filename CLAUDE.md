@@ -80,6 +80,7 @@ faster cycles are needed later, consider narrowing `get_markets()` with a
 | `SCAN_INTERVAL_SECONDS` | Delay between scan loop iterations |
 | `DAILY_LOSS_LIMIT_USD` | Stop trading for the day once exceeded |
 | `ORDER_BOOK_FETCH_WORKERS` | Concurrent order-book lookups during market scanning (default 20) |
+| `DASHBOARD_PASSWORD` | Password for dashboard HTTP Basic Auth (username: `admin`). Leave unset to disable auth. |
 | `DRY_RUN` | When `true`, log intended trades instead of placing real orders |
 | `ENV` | `development` / `production` |
 | `LOG_LEVEL` | Python logging level |

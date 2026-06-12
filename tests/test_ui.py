@@ -84,6 +84,39 @@ def test_api_summary_contains_expected_keys(tmp_path, monkeypatch):
     assert data["kalshi_open_positions"] == 2
 
 
+def test_auth_blocks_unauthenticated_requests(tmp_path, monkeypatch):
+    db = str(tmp_path / "trades.db")
+    monkeypatch.setattr("src.logger.DB_PATH", db)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "secret")
+    init_db(db)
+
+    with TestClient(app, raise_server_exceptions=False) as tc:
+        assert tc.get("/").status_code == 401
+        assert tc.get("/api/trades").status_code == 401
+        assert tc.get("/api/summary").status_code == 401
+
+
+def test_auth_accepts_correct_credentials(tmp_path, monkeypatch):
+    db = str(tmp_path / "trades.db")
+    monkeypatch.setattr("src.logger.DB_PATH", db)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "secret")
+    init_db(db)
+
+    with TestClient(app) as tc:
+        assert tc.get("/", auth=("admin", "secret")).status_code == 200
+        assert tc.get("/api/trades", auth=("admin", "secret")).status_code == 200
+
+
+def test_auth_rejects_wrong_password(tmp_path, monkeypatch):
+    db = str(tmp_path / "trades.db")
+    monkeypatch.setattr("src.logger.DB_PATH", db)
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "secret")
+    init_db(db)
+
+    with TestClient(app, raise_server_exceptions=False) as tc:
+        assert tc.get("/", auth=("admin", "wrong")).status_code == 401
+
+
 def test_api_summary_tolerates_kalshi_failure(tmp_path, monkeypatch):
     db = str(tmp_path / "trades.db")
     monkeypatch.setattr("src.logger.DB_PATH", db)
