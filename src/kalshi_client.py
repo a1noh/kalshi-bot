@@ -160,6 +160,18 @@ class KalshiClient:
             return {}
         return response.json()
 
+    def get_market(self, ticker: str) -> dict[str, Any]:
+        """Fetch a single market by ticker.
+
+        Args:
+            ticker: The market ticker symbol.
+
+        Returns:
+            The market dict (fields: ``ticker``, ``title``, ``close_time``, etc.).
+        """
+        response = self._request("GET", f"/markets/{ticker}")
+        return response.get("market", response)
+
     def get_markets(self, **filters: Any) -> dict[str, Any]:
         """List markets, optionally filtered.
 

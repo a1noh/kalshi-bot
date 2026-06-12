@@ -52,6 +52,35 @@
     </table>
   </section>
 
+  <section class="action-section">
+    <h2>Market Research</h2>
+    <p class="action-hint">Enter a ticker — Claude will web-search and return a signal (~30 s).</p>
+    <div class="action-form">
+      <input id="research-ticker" type="text" placeholder="e.g. KXBTCD-26DEC3130" spellcheck="false" />
+      <button id="research-btn">Research</button>
+    </div>
+    <div id="research-status" class="action-status hidden"></div>
+    <div id="research-result" class="result-card hidden"></div>
+  </section>
+
+  <section class="action-section">
+    <h2>Place a Bet</h2>
+    <p class="action-hint">Bypasses confidence check; all other risk limits still apply.</p>
+    <div class="action-form">
+      <input id="bet-ticker" type="text" placeholder="e.g. KXBTCD-26DEC3130" spellcheck="false" />
+      <div class="side-toggle">
+        <button class="side-btn active" id="side-yes-btn">YES</button>
+        <button class="side-btn" id="side-no-btn">NO</button>
+      </div>
+      <div class="size-wrap">
+        <span class="size-prefix">$</span>
+        <input id="bet-size" type="number" min="1" step="1" value="5" />
+      </div>
+      <button id="bet-btn">Place Bet</button>
+    </div>
+    <div id="bet-status" class="action-status hidden"></div>
+  </section>
+
   <script src="/static/app.js"></script>
 </body>
 </html>
