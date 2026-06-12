@@ -93,23 +93,18 @@ class BetRequest(BaseModel):
 
 _DISCOVER_SYSTEM = """\
 You are an expert prediction market trader using Kalshi (kalshi.com).
-Your task: find today's top 3-5 most actionable prediction market opportunities.
+Your task: find today's top 2-3 actionable Kalshi markets in under 4 web searches.
 
-Step 1 — Search for news: use web_search to find today's most significant \
-and time-sensitive news events (politics, economics, crypto, sports, etc.).
+Do exactly this:
+1. One search for today's big news events.
+2. One or two searches to find real Kalshi market tickers for the best events \
+   (e.g. "kalshi [topic] market ticker" or "site:kalshi.com [event]"). \
+   Tickers look like: KXBTCD-26DEC3130, KXELECT-25NOV5-T, PRES-2024-DJT.
+3. Call submit_opportunities immediately — do not do more searches.
 
-Step 2 — Find real Kalshi tickers: for each promising event, search for the \
-actual Kalshi market ticker. Try queries like "kalshi [topic] prediction \
-market ticker", "site:kalshi.com [topic]", or "kalshi.com markets [event]". \
-Tickers look like: KXBTCD-26DEC3130, KXELECT-25NOV5-T, PRES-2024-DJT, etc.
-
-Step 3 — Evaluate edge: estimate the true probability, compare to the market \
-mid price. Only include markets where you have clear, well-sourced edge \
-(your probability significantly differs from the current price).
-
-After your research, call submit_opportunities with your findings. \
-Only include markets with verified, real tickers you found via search. \
-Pass an empty list for opportunities if nothing has genuine edge.\
+Only include markets with real, verified tickers from your searches. \
+If you cannot find a real ticker, skip that market. \
+Pass an empty list if nothing has genuine edge.\
 """
 
 
@@ -156,7 +151,7 @@ def _discovery_schema() -> dict[str, Any]:
 def _run_discovery(max_bet_usd: float) -> list[dict[str, Any]]:
     """Call Claude to find today's hot Kalshi markets. Returns raw list from Claude."""
     import json as _json
-    client = _anthropic.Anthropic()
+    client = _anthropic.Anthropic(timeout=90.0)
     tools: list[Any] = [
         {"type": "web_search_20260209", "name": "web_search"},
         {
@@ -167,15 +162,14 @@ def _run_discovery(max_bet_usd: float) -> list[dict[str, Any]]:
     ]
     response = client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=4096,
+        max_tokens=2048,
         system=_DISCOVER_SYSTEM,
         messages=[{
             "role": "user",
             "content": (
                 f"Max bet size per trade: ${max_bet_usd}. "
-                "Find today's top prediction market opportunities on Kalshi. "
-                "Search current news, find specific verified Kalshi tickers, "
-                "and call submit_opportunities with your findings."
+                "Do 3-4 web searches max, then immediately call submit_opportunities. "
+                "Find today's top 2-3 Kalshi prediction market opportunities with real tickers."
             ),
         }],
         tools=tools,
