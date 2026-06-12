@@ -14,7 +14,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
-import anthropic as _anthropic
 from anthropic import BadRequestError as _BadRequestError
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import FileResponse
@@ -28,6 +27,21 @@ from src.logger import get_daily_pnl, get_open_position_count, get_recent_trades
 from src.order_book import get_order_book_summary
 from src.risk import RiskManager
 from src.signal import TradeSignal, generate_signal
+
+_DISCOVER_MIN_VOLUME = 50
+_DISCOVER_MIN_MINUTES = 30
+_DISCOVER_LIMIT = 8
+# Known high-volume series to query for discover
+_DISCOVER_SERIES = [
+    "KXINX",   # S&P 500
+    "KXBTCD",  # Bitcoin
+    "KXFED",   # Federal Reserve rate
+    "KXETH",   # Ethereum
+    "KXNDAQ",  # Nasdaq
+    "KXDOW",   # Dow Jones
+    "KXGOLD",  # Gold
+    "KXOIL",   # Oil
+]
 
 STATIC_DIR = Path(__file__).parent / "static"
 _DASHBOARD_USER = "admin"
@@ -88,24 +102,8 @@ class BetRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Discovery helpers
+# Discovery helpers — pull real markets from Kalshi (no Claude, no API cost)
 # ---------------------------------------------------------------------------
-
-_DISCOVER_SYSTEM = """\
-You are an expert prediction market trader using Kalshi (kalshi.com).
-Your task: find today's top 2-3 actionable Kalshi markets in under 4 web searches.
-
-Do exactly this:
-1. One search for today's big news events.
-2. One or two searches to find real Kalshi market tickers for the best events \
-   (e.g. "kalshi [topic] market ticker" or "site:kalshi.com [event]"). \
-   Tickers look like: KXBTCD-26DEC3130, KXELECT-25NOV5-T, PRES-2024-DJT.
-3. Call submit_opportunities immediately — do not do more searches.
-
-Only include markets with real, verified tickers from your searches. \
-If you cannot find a real ticker, skip that market. \
-Pass an empty list if nothing has genuine edge.\
-"""
 
 
 def _anthropic_error_msg(exc: Exception) -> str:
@@ -120,67 +118,63 @@ def _anthropic_error_msg(exc: Exception) -> str:
     return str(exc)
 
 
-def _discovery_schema() -> dict[str, Any]:
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["opportunities"],
-        "properties": {
-            "opportunities": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": ["ticker", "title", "side", "confidence", "size_usd", "edge", "reasoning", "sources"],
-                    "properties": {
-                        "ticker":     {"type": "string"},
-                        "title":      {"type": "string"},
-                        "side":       {"type": "string", "enum": ["yes", "no"]},
-                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-                        "size_usd":   {"type": "number", "minimum": 0},
-                        "edge":       {"type": "number"},
-                        "reasoning":  {"type": "string"},
-                        "sources":    {"type": "array", "items": {"type": "string"}},
-                    },
-                },
-            }
-        },
-    }
-
-
 def _run_discovery(max_bet_usd: float) -> list[dict[str, Any]]:
-    """Call Claude to find today's hot Kalshi markets. Returns raw list from Claude."""
-    import json as _json
-    client = _anthropic.Anthropic(timeout=90.0)
-    tools: list[Any] = [
-        {"type": "web_search_20260209", "name": "web_search"},
-        {
-            "name": "submit_opportunities",
-            "description": "Submit the list of discovered Kalshi market opportunities after completing research.",
-            "input_schema": _discovery_schema(),
-        },
-    ]
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2048,
-        system=_DISCOVER_SYSTEM,
-        messages=[{
-            "role": "user",
-            "content": (
-                f"Max bet size per trade: ${max_bet_usd}. "
-                "Do 3-4 web searches max, then immediately call submit_opportunities. "
-                "Find today's top 2-3 Kalshi prediction market opportunities with real tickers."
-            ),
-        }],
-        tools=tools,
-    )
-    for block in reversed(response.content):
-        if block.type == "tool_use" and block.name == "submit_opportunities":
-            data = block.input
-            if isinstance(data, str):
-                data = _json.loads(data)
-            return data.get("opportunities", [])
-    return []
+    """Return the top open Kalshi markets by volume — no Claude call needed.
+
+    Queries a curated set of high-volume series so we skip the parlay/multi-event
+    markets that dominate the generic /markets endpoint.
+    """
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    all_markets: list[dict[str, Any]] = []
+
+    for series in _DISCOVER_SERIES:
+        try:
+            resp = get_client().get_markets(status="open", series_ticker=series, limit=50)
+            all_markets.extend(resp.get("markets", []))
+        except Exception:
+            continue
+
+    candidates: list[tuple[float, dict[str, Any]]] = []
+    for m in all_markets:
+        close_str = m.get("close_time", "")
+        if not close_str:
+            continue
+        close = datetime.fromisoformat(close_str.replace("Z", "+00:00"))
+        if (close - now).total_seconds() < _DISCOVER_MIN_MINUTES * 60:
+            continue
+        vol = float(m.get("volume_fp") or m.get("volume") or 0)
+        if vol < _DISCOVER_MIN_VOLUME:
+            continue
+        candidates.append((vol, m))
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for vol, m in candidates:
+        if len(results) >= _DISCOVER_LIMIT:
+            break
+        ticker = m["ticker"]
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        try:
+            ob = get_order_book_summary(get_client(), ticker)
+        except Exception:
+            continue
+        results.append({
+            "ticker": ticker,
+            "title": m.get("title", ticker),
+            "size_usd": max_bet_usd,
+            "mid_price": ob.mid_price,
+            "best_bid": ob.best_bid,
+            "best_ask": ob.best_ask,
+            "volume": vol,
+        })
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -223,35 +217,12 @@ def summary() -> dict[str, Any]:
 
 @app.post("/api/discover", dependencies=[Depends(_require_auth)])
 def discover() -> list[dict[str, Any]]:
-    """Ask Claude to find hot markets via web search. Validates each ticker against Kalshi."""
+    """Return top open Kalshi markets by volume. Fast — no Claude call."""
     max_bet = float(os.environ.get("MAX_BET_USD", "10"))
-
     try:
-        raw = _run_discovery(max_bet)
+        return _run_discovery(max_bet)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=_anthropic_error_msg(exc)) from exc
-
-    results = []
-    for opp in raw:
-        ticker = opp.get("ticker", "").strip()
-        if not ticker:
-            continue
-        try:
-            market = get_client().get_market(ticker)
-            order_book = get_order_book_summary(get_client(), ticker)
-        except Exception:
-            continue  # ticker invalid or market closed — skip silently
-        results.append({
-            **opp,
-            "ticker": ticker,
-            "title": market.get("title") or opp.get("title", ticker),
-            "size_usd": min(float(opp.get("size_usd", max_bet)), max_bet),
-            "mid_price": order_book.mid_price,
-            "best_bid": order_book.best_bid,
-            "best_ask": order_book.best_ask,
-        })
-
-    return results
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/api/research", dependencies=[Depends(_require_auth)])

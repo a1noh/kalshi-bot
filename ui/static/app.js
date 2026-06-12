@@ -159,7 +159,7 @@ function initWizard() {
 async function handleDiscover(wizard, findBtn) {
   findBtn.disabled = true;
 
-  const step = createLoadingStep(wizard, "Searching today's news and matching Kalshi markets… (~1-2 min)");
+  const step = createLoadingStep(wizard, "Loading top Kalshi markets…");
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 600000);
@@ -199,7 +199,7 @@ function buildOppsContent(wizard, opps) {
 
   const label = document.createElement("p");
   label.className = "step-label";
-  label.textContent = `Found ${opps.length} market${opps.length !== 1 ? "s" : ""} with potential edge — choose one to research:`;
+  label.textContent = `${opps.length} active market${opps.length !== 1 ? "s" : ""} — pick one to research:`;
   div.appendChild(label);
 
   const list = document.createElement("div");
@@ -217,15 +217,14 @@ function buildOppsContent(wizard, opps) {
     title.className = "opp-row-title";
     title.textContent = opp.title;
 
-    const badge = document.createElement("span");
-    badge.className = `badge ${opp.side}`;
-    badge.textContent = `BUY ${opp.side.toUpperCase()}`;
+    const midCents = opp.mid_price != null ? `${(opp.mid_price * 100).toFixed(0)}¢` : "?¢";
+    const volK = opp.volume != null ? `$${(opp.volume / 1000).toFixed(0)}k vol` : "";
 
     const meta = document.createElement("span");
     meta.className = "opp-row-meta";
-    meta.textContent = `${(opp.confidence * 100).toFixed(0)}% · ${pct(opp.edge)}`;
+    meta.textContent = [midCents, volK].filter(Boolean).join(" · ");
 
-    btn.append(lbl, title, badge, meta);
+    btn.append(lbl, title, meta);
 
     btn.addEventListener("click", () => {
       list.querySelectorAll(".opp-row-btn").forEach(b => { b.disabled = true; });
