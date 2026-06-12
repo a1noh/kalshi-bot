@@ -1,0 +1,8 @@
+services:
+  bot:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./trades.db:/app/trades.db
+    restart: unless-stopped
