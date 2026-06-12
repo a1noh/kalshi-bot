@@ -1,15 +1,39 @@
 const REFRESH_MS = 5000;
+let maxBetUsd = 10; // updated from /api/summary
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function formatUsd(value) {
-  if (value === null || value === undefined) {
-    return "-";
-  }
+  if (value === null || value === undefined) return "-";
   return `$${Number(value).toFixed(2)}`;
 }
 
+function pct(value) {
+  if (value === null || value === undefined) return "-";
+  const sign = value >= 0 ? "+" : "";
+  return `${sign}${(value * 100).toFixed(1)}%`;
+}
+
+// Compute 3 bet-size options: conservative, recommended, full
+function betSizes(recommendedUsd) {
+  const conservative = Math.max(1, Math.round((maxBetUsd * 0.25) * 100) / 100);
+  const recommended  = Math.min(Math.max(1, Math.round(recommendedUsd * 100) / 100), maxBetUsd);
+  const full         = maxBetUsd;
+  // deduplicate and sort
+  return [...new Set([conservative, recommended, full])].sort((a, b) => a - b);
+}
+
+// ---------------------------------------------------------------------------
+// Summary polling
+// ---------------------------------------------------------------------------
+
 async function refreshSummary() {
-  const response = await fetch("/api/summary");
-  const data = await response.json();
+  const res = await fetch("/api/summary");
+  const data = await res.json();
+
+  maxBetUsd = data.max_bet_usd ?? 10;
 
   const badge = document.getElementById("mode-badge");
   const isDryRun = String(data.dry_run).toLowerCase() !== "false";
@@ -23,9 +47,8 @@ async function refreshSummary() {
 }
 
 async function refreshTrades() {
-  const response = await fetch("/api/trades?limit=50");
-  const trades = await response.json();
-
+  const res = await fetch("/api/trades?limit=50");
+  const trades = await res.json();
   const body = document.getElementById("trades-body");
   body.replaceChildren();
 
@@ -51,7 +74,6 @@ async function refreshTrades() {
       trade.status,
       trade.reasoning ?? "",
     ];
-
     cells.forEach((value, index) => {
       const cell = document.createElement("td");
       cell.textContent = value;
@@ -61,7 +83,6 @@ async function refreshTrades() {
       }
       row.appendChild(cell);
     });
-
     body.appendChild(row);
   }
 }
@@ -75,7 +96,166 @@ refreshAll();
 setInterval(refreshAll, REFRESH_MS);
 
 // ---------------------------------------------------------------------------
-// Research
+// Discover
+// ---------------------------------------------------------------------------
+
+document.getElementById("discover-btn").addEventListener("click", async () => {
+  const btn = document.getElementById("discover-btn");
+  const statusEl = document.getElementById("discover-status");
+  const listEl = document.getElementById("opportunities-list");
+
+  btn.disabled = true;
+  statusEl.textContent = "Searching today's news and matching Kalshi markets… (~45 s)";
+  statusEl.className = "action-status";
+  listEl.replaceChildren();
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 180000);
+
+  try {
+    const res = await fetch("/api/discover", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || res.statusText);
+    }
+
+    const opps = await res.json();
+
+    if (opps.length === 0) {
+      statusEl.textContent = "No clear opportunities found right now — try again later.";
+      statusEl.className = "action-status";
+    } else {
+      statusEl.className = "action-status hidden";
+      opps.forEach(opp => listEl.appendChild(buildOpportunityCard(opp)));
+    }
+  } catch (err) {
+    clearTimeout(timeout);
+    statusEl.textContent = `Error: ${err.message}`;
+    statusEl.className = "action-status error";
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function buildOpportunityCard(opp) {
+  const card = document.createElement("div");
+  card.className = "opp-card";
+
+  // Header row: badge + ticker + meta
+  const header = document.createElement("div");
+  header.className = "opp-header";
+
+  const badge = document.createElement("span");
+  badge.className = `badge ${opp.side}`;
+  badge.textContent = `BUY ${opp.side.toUpperCase()}`;
+  header.appendChild(badge);
+
+  const ticker = document.createElement("span");
+  ticker.className = "opp-ticker";
+  ticker.textContent = opp.ticker;
+  header.appendChild(ticker);
+
+  const meta = document.createElement("span");
+  meta.className = "opp-meta";
+  const midStr = opp.mid_price != null ? ` · mid ${(opp.mid_price * 100).toFixed(0)}¢` : "";
+  meta.textContent = `${(opp.confidence * 100).toFixed(0)}% conf · edge ${pct(opp.edge)}${midStr}`;
+  header.appendChild(meta);
+
+  card.appendChild(header);
+
+  // Title
+  const title = document.createElement("p");
+  title.className = "opp-title";
+  title.textContent = opp.title;
+  card.appendChild(title);
+
+  // Reasoning (truncatable)
+  const reasoning = document.createElement("p");
+  reasoning.className = "opp-reasoning";
+  reasoning.textContent = opp.reasoning;
+  card.appendChild(reasoning);
+
+  // Bet row
+  const betRow = document.createElement("div");
+  betRow.className = "opp-bet-row";
+
+  const betLabel = document.createElement("span");
+  betLabel.className = "opp-bet-label";
+  betLabel.textContent = "Bet:";
+  betRow.appendChild(betLabel);
+
+  const sizes = betSizes(opp.size_usd);
+  const recommendedSize = Math.min(Math.max(1, Math.round(opp.size_usd * 100) / 100), maxBetUsd);
+
+  sizes.forEach(size => {
+    const btn = document.createElement("button");
+    btn.className = "bet-size-btn";
+    btn.textContent = `$${size % 1 === 0 ? size : size.toFixed(2)}`;
+    if (size === recommendedSize) {
+      btn.classList.add("recommended");
+      btn.title = "Claude's recommended size";
+    }
+
+    btn.addEventListener("click", async () => {
+      // disable all bet buttons on this card
+      card.querySelectorAll(".bet-size-btn").forEach(b => { b.disabled = true; });
+
+      const resultEl = card.querySelector(".opp-result");
+      resultEl.textContent = `Placing ${opp.side.toUpperCase()} ${opp.ticker} $${size}…`;
+      resultEl.className = "opp-result";
+
+      try {
+        const res = await fetch("/api/bet", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticker: opp.ticker, side: opp.side, size_usd: size }),
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({ detail: res.statusText }));
+          throw new Error(errData.detail || res.statusText);
+        }
+
+        const data = await res.json();
+        const order = data.order || {};
+        const dryRun = data.dry_run;
+        const parts = [
+          dryRun ? "DRY RUN" : "PLACED",
+          `${order.count ?? "?"} contract(s) @ ${order.yes_price_dollars ?? order.no_price_dollars ?? "?"}`,
+        ].filter(Boolean);
+        resultEl.textContent = parts.join(" · ");
+        resultEl.className = `opp-result ${dryRun ? "dry-run" : "success"}`;
+
+        refreshTrades().catch(console.error);
+      } catch (err) {
+        resultEl.textContent = `Rejected: ${err.message}`;
+        resultEl.className = "opp-result error";
+        card.querySelectorAll(".bet-size-btn").forEach(b => { b.disabled = false; });
+      }
+    });
+
+    betRow.appendChild(btn);
+  });
+
+  card.appendChild(betRow);
+
+  // Result line (hidden until bet placed)
+  const resultEl = document.createElement("div");
+  resultEl.className = "opp-result hidden";
+  card.appendChild(resultEl);
+
+  return card;
+}
+
+// ---------------------------------------------------------------------------
+// Manual research
 // ---------------------------------------------------------------------------
 
 let selectedSide = "yes";
@@ -125,7 +305,7 @@ document.getElementById("research-btn").addEventListener("click", async () => {
     statusEl.className = "action-status hidden";
     resultEl.className = "result-card";
 
-    // pre-fill bet form with this ticker
+    // pre-fill manual bet form
     document.getElementById("bet-ticker").value = data.market_ticker;
     if (!data.skip) setSide(data.side);
   } catch (err) {
@@ -143,21 +323,21 @@ function renderResearchResult(el, signal) {
   const header = document.createElement("div");
   header.className = "result-header";
 
-  const label = document.createElement("span");
+  const badge = document.createElement("span");
   if (signal.skip) {
-    label.className = "badge skip";
-    label.textContent = "SKIP";
+    badge.className = "badge skip";
+    badge.textContent = "SKIP";
   } else {
-    label.className = `badge ${signal.side === "yes" ? "yes" : "no"}`;
-    label.textContent = `BUY ${signal.side.toUpperCase()}`;
+    badge.className = `badge ${signal.side}`;
+    badge.textContent = `BUY ${signal.side.toUpperCase()}`;
   }
-  header.appendChild(label);
+  header.appendChild(badge);
 
   const meta = document.createElement("span");
   meta.className = "result-meta";
   meta.textContent = [
     `confidence ${(signal.confidence * 100).toFixed(0)}%`,
-    `edge ${(signal.edge * 100).toFixed(1)}%`,
+    `edge ${pct(signal.edge)}`,
     signal.skip_reason ? `skip: ${signal.skip_reason}` : null,
   ].filter(Boolean).join(" · ");
   header.appendChild(meta);
@@ -191,7 +371,7 @@ function renderResearchResult(el, signal) {
 }
 
 // ---------------------------------------------------------------------------
-// Bet
+// Manual bet
 // ---------------------------------------------------------------------------
 
 document.getElementById("bet-btn").addEventListener("click", async () => {
@@ -229,6 +409,8 @@ document.getElementById("bet-btn").addEventListener("click", async () => {
     ].filter(Boolean);
     statusEl.textContent = parts.join(" · ");
     statusEl.className = `action-status ${dryRun ? "dry-run" : "success"}`;
+
+    refreshTrades().catch(console.error);
   } catch (err) {
     statusEl.textContent = `Rejected: ${err.message}`;
     statusEl.className = "action-status error";

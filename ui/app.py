@@ -1,12 +1,9 @@
 """Minimal local dashboard for kalshi-bot.
 
-Serves a single static page plus JSON endpoints for viewing trade history,
-triggering on-demand market research, and placing manual bets. The continuous
-scan loop (main.py) is a separate process; the dashboard is always-on and
-executes actions only when the user clicks a button.
+Always-on FastAPI server. The continuous scan loop (main.py) is a separate
+process. This dashboard executes actions only when the user clicks a button.
 
-Auth: set DASHBOARD_PASSWORD in .env to enable HTTP Basic Auth (username:
-admin). Leave unset to run without auth (fine for local dev).
+Auth: set DASHBOARD_PASSWORD in .env (username: admin). Leave unset for no auth.
 """
 
 from __future__ import annotations
@@ -17,6 +14,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
+import anthropic as _anthropic
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
@@ -44,7 +42,6 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 def _require_auth(credentials: HTTPBasicCredentials | None = Depends(_security)) -> None:
-    """Enforce HTTP Basic Auth when DASHBOARD_PASSWORD is set."""
     password = os.environ.get("DASHBOARD_PASSWORD", "")
     if not password:
         return
@@ -54,9 +51,7 @@ def _require_auth(credentials: HTTPBasicCredentials | None = Depends(_security))
             detail="Authentication required",
             headers={"WWW-Authenticate": "Basic"},
         )
-    user_ok = secrets.compare_digest(
-        credentials.username.encode(), _DASHBOARD_USER.encode()
-    )
+    user_ok = secrets.compare_digest(credentials.username.encode(), _DASHBOARD_USER.encode())
     pass_ok = secrets.compare_digest(credentials.password.encode(), password.encode())
     if not (user_ok and pass_ok):
         raise HTTPException(
@@ -73,7 +68,6 @@ def _require_auth(credentials: HTTPBasicCredentials | None = Depends(_security))
 
 @lru_cache
 def get_client() -> KalshiClient:
-    """Return a cached `KalshiClient`, constructed lazily on first use."""
     return KalshiClient()
 
 
@@ -90,6 +84,84 @@ class BetRequest(BaseModel):
     ticker: str
     side: Literal["yes", "no"]
     size_usd: float
+
+
+# ---------------------------------------------------------------------------
+# Discovery helpers
+# ---------------------------------------------------------------------------
+
+_DISCOVER_SYSTEM = """\
+You are an expert prediction market trader using Kalshi (kalshi.com).
+Your task: find today's top 3-5 most actionable prediction market opportunities.
+
+Step 1 — Search for news: use web_search to find today's most significant \
+and time-sensitive news events (politics, economics, crypto, sports, etc.).
+
+Step 2 — Find real Kalshi tickers: for each promising event, search for the \
+actual Kalshi market ticker. Try queries like "kalshi [topic] prediction \
+market ticker", "site:kalshi.com [topic]", or "kalshi.com markets [event]". \
+Tickers look like: KXBTCD-26DEC3130, KXELECT-25NOV5-T, PRES-2024-DJT, etc.
+
+Step 3 — Evaluate edge: estimate the true probability, compare to the market \
+mid price. Only include markets where you have clear, well-sourced edge \
+(your probability significantly differs from the current price).
+
+Return ONLY markets with verified, real tickers you found via search. \
+If you can't verify a ticker, skip it. Return [] if nothing has genuine edge.\
+"""
+
+
+def _discovery_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["opportunities"],
+        "properties": {
+            "opportunities": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["ticker", "title", "side", "confidence", "size_usd", "edge", "reasoning", "sources"],
+                    "properties": {
+                        "ticker":     {"type": "string"},
+                        "title":      {"type": "string"},
+                        "side":       {"type": "string", "enum": ["yes", "no"]},
+                        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "size_usd":   {"type": "number", "minimum": 0},
+                        "edge":       {"type": "number"},
+                        "reasoning":  {"type": "string"},
+                        "sources":    {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+            }
+        },
+    }
+
+
+def _run_discovery(max_bet_usd: float) -> list[dict[str, Any]]:
+    """Call Claude to find today's hot Kalshi markets. Returns raw list from Claude."""
+    client = _anthropic.Anthropic()
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=4096,
+        thinking={"type": "adaptive"},
+        system=_DISCOVER_SYSTEM,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Max bet size per trade: ${max_bet_usd}. "
+                "Find today's top prediction market opportunities on Kalshi. "
+                "Search current news, find specific verified Kalshi tickers, "
+                "and return only markets where you have real edge."
+            ),
+        }],
+        tools=[{"type": "web_search_20260209", "name": "web_search"}],
+        output_config={"format": {"type": "json_schema", "schema": _discovery_schema()}},
+    )
+    text = next(b.text for b in reversed(response.content) if b.type == "text")
+    import json
+    return json.loads(text).get("opportunities", [])
 
 
 # ---------------------------------------------------------------------------
@@ -113,30 +185,63 @@ def summary() -> dict[str, Any]:
         "dry_run": os.environ.get("DRY_RUN", "true"),
         "daily_pnl": get_daily_pnl(),
         "open_positions_logged": get_open_position_count(),
+        "max_bet_usd": float(os.environ.get("MAX_BET_USD", "10")),
         "balance_usd": None,
         "kalshi_open_positions": None,
     }
     try:
-        balance = get_client().get_balance()
-        result["balance_usd"] = balance.get("balance", 0) / 100
+        result["balance_usd"] = get_client().get_balance().get("balance", 0) / 100
     except Exception:
         pass
     try:
-        positions = get_client().get_positions()
-        result["kalshi_open_positions"] = len(positions.get("market_positions", []))
+        result["kalshi_open_positions"] = len(
+            get_client().get_positions().get("market_positions", [])
+        )
     except Exception:
         pass
     return result
 
 
+@app.post("/api/discover", dependencies=[Depends(_require_auth)])
+def discover() -> list[dict[str, Any]]:
+    """Ask Claude to find hot markets via web search. Validates each ticker against Kalshi."""
+    max_bet = float(os.environ.get("MAX_BET_USD", "10"))
+
+    try:
+        raw = _run_discovery(max_bet)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Discovery failed: {exc}") from exc
+
+    results = []
+    for opp in raw:
+        ticker = opp.get("ticker", "").strip()
+        if not ticker:
+            continue
+        try:
+            market = get_client().get_market(ticker)
+            order_book = get_order_book_summary(get_client(), ticker)
+        except Exception:
+            continue  # ticker invalid or market closed — skip silently
+        results.append({
+            **opp,
+            "ticker": ticker,
+            "title": market.get("title") or opp.get("title", ticker),
+            "size_usd": min(float(opp.get("size_usd", max_bet)), max_bet),
+            "mid_price": order_book.mid_price,
+            "best_bid": order_book.best_bid,
+            "best_ask": order_book.best_ask,
+        })
+
+    return results
+
+
 @app.post("/api/research", dependencies=[Depends(_require_auth)])
 def research(body: ResearchRequest) -> dict[str, Any]:
-    """Run Claude market research on a ticker. Takes ~30s (web search)."""
+    """Run Claude research on a specific ticker (~30 s)."""
     try:
         market = get_client().get_market(body.ticker)
     except Exception as exc:
         raise HTTPException(status_code=404, detail=f"Market not found: {exc}") from exc
-
     try:
         order_book = get_order_book_summary(get_client(), body.ticker)
     except Exception as exc:
@@ -148,7 +253,7 @@ def research(body: ResearchRequest) -> dict[str, Any]:
 
 @app.post("/api/bet", dependencies=[Depends(_require_auth)])
 def bet(body: BetRequest) -> dict[str, Any]:
-    """Place a manual bet. Runs through risk checks; respects DRY_RUN."""
+    """Place a manual bet. Runs risk checks; respects DRY_RUN."""
     try:
         order_book = get_order_book_summary(get_client(), body.ticker)
     except Exception as exc:
