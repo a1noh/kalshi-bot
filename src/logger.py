@@ -27,15 +27,6 @@ class JSONFormatter(logging.Formatter):
     """Formats log records as single-line JSON objects."""
 
     def format(self, record: logging.LogRecord) -> str:
-        """Render a log record as a JSON string.
-
-        Args:
-            record: The log record to format.
-
-        Returns:
-            A JSON-encoded string with `timestamp`, `level`, `logger`,
-            `message`, and any `extra_fields` passed via `extra=`.
-        """
         payload: dict[str, Any] = {
             "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
@@ -51,15 +42,9 @@ class JSONFormatter(logging.Formatter):
 
 
 def setup_logging(level: str | None = None) -> None:
-    """Configure the root logger for structured JSON output to stdout.
-
-    Args:
-        level: Logging level name (e.g. ``"INFO"``). Defaults to the
-            ``LOG_LEVEL`` environment variable, or ``"INFO"``.
-    """
+    """Configure the root logger for structured JSON output to stdout."""
     handler = logging.StreamHandler()
     handler.setFormatter(JSONFormatter())
-
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
@@ -68,14 +53,6 @@ def setup_logging(level: str | None = None) -> None:
 
 @contextmanager
 def _connect(db_path: str | None = None) -> Iterator[sqlite3.Connection]:
-    """Open a SQLite connection to the trade log, closing it afterwards.
-
-    Args:
-        db_path: Path to the SQLite database file. Defaults to `DB_PATH`.
-
-    Yields:
-        An open `sqlite3.Connection`.
-    """
     conn = sqlite3.connect(db_path or DB_PATH)
     try:
         yield conn
@@ -84,11 +61,7 @@ def _connect(db_path: str | None = None) -> Iterator[sqlite3.Connection]:
 
 
 def init_db(db_path: str | None = None) -> None:
-    """Create the `trades` table if it doesn't already exist.
-
-    Args:
-        db_path: Path to the SQLite database file. Defaults to `DB_PATH`.
-    """
+    """Create / migrate the trades table."""
     with _connect(db_path) as conn:
         conn.execute(
             """
@@ -103,37 +76,54 @@ def init_db(db_path: str | None = None) -> None:
                 status TEXT NOT NULL,
                 pnl_usd REAL,
                 reasoning TEXT,
-                order_id TEXT
+                order_id TEXT,
+                series TEXT,
+                full_reasoning TEXT,
+                sources TEXT,
+                skip_reason TEXT,
+                outcome TEXT
             )
             """
         )
+        # Migrate existing DBs that predate the new columns
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(trades)")}
+        for col, defn in [
+            ("series", "TEXT"),
+            ("full_reasoning", "TEXT"),
+            ("sources", "TEXT"),
+            ("skip_reason", "TEXT"),
+            ("outcome", "TEXT"),
+        ]:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {defn}")
         conn.commit()
 
 
 def record_trade(trade: dict[str, Any], db_path: str | None = None) -> int:
-    """Insert a trade record into the trade log.
+    """Insert a trade/research record.
 
-    Args:
-        trade: A dict with keys ``market_ticker``, ``side``, ``size_usd``,
-            ``confidence``, ``edge``, ``status`` (e.g. ``"open"``,
-            ``"closed"``, ``"skipped"``, ``"rejected"``, ``"dry_run"``), and
-            optionally ``pnl_usd``, ``reasoning``, ``order_id``.
-        db_path: Path to the SQLite database file. Defaults to `DB_PATH`.
-
-    Returns:
-        The row id of the inserted trade.
+    Accepts all original fields plus:
+      series, full_reasoning, sources (list[str]), skip_reason, outcome.
     """
+    sources = trade.get("sources")
+    if isinstance(sources, list):
+        sources = json.dumps(sources)
+
+    ticker = trade["market_ticker"]
+    series = trade.get("series") or ticker.split("-")[0]
+
     with _connect(db_path) as conn:
         cursor = conn.execute(
             """
             INSERT INTO trades (
                 created_at, market_ticker, side, size_usd, confidence, edge,
-                status, pnl_usd, reasoning, order_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                status, pnl_usd, reasoning, order_id,
+                series, full_reasoning, sources, skip_reason, outcome
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now(UTC).isoformat(),
-                trade["market_ticker"],
+                ticker,
                 trade["side"],
                 trade["size_usd"],
                 trade["confidence"],
@@ -142,22 +132,76 @@ def record_trade(trade: dict[str, Any], db_path: str | None = None) -> int:
                 trade.get("pnl_usd"),
                 trade.get("reasoning"),
                 trade.get("order_id"),
+                series,
+                trade.get("full_reasoning"),
+                sources,
+                trade.get("skip_reason"),
+                trade.get("outcome"),
             ),
         )
         conn.commit()
         return int(cursor.lastrowid)
 
 
+def update_outcome(trade_id: int, outcome: str, pnl_usd: float | None = None,
+                   db_path: str | None = None) -> None:
+    """Set the win/loss outcome on a previously recorded trade."""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "UPDATE trades SET outcome = ?, pnl_usd = COALESCE(?, pnl_usd) WHERE id = ?",
+            (outcome, pnl_usd, trade_id),
+        )
+        conn.commit()
+
+
+def get_trade_history(series: str | None = None, limit: int = 8,
+                      db_path: str | None = None) -> list[dict[str, Any]]:
+    """Return recent trades, optionally filtered by series (e.g. 'KXBTCD')."""
+    with _connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        if series:
+            rows = conn.execute(
+                "SELECT * FROM trades WHERE series = ? ORDER BY created_at DESC LIMIT ?",
+                (series, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM trades ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            if d.get("sources") and isinstance(d["sources"], str):
+                try:
+                    d["sources"] = json.loads(d["sources"])
+                except Exception:
+                    d["sources"] = []
+            result.append(d)
+        return result
+
+
+def format_history_for_claude(trades: list[dict[str, Any]]) -> str:
+    """Format past trades as a compact context block for Claude."""
+    if not trades:
+        return ""
+    lines = ["Past trades on similar markets (use as reference — learn from wins/losses):"]
+    for t in trades:
+        outcome_str = f" → {t['outcome'].upper()}" if t.get("outcome") else ""
+        skip_str = " [SKIPPED]" if t.get("status") == "skipped" else ""
+        lines.append(
+            f"- {t['market_ticker']} | {t['side'].upper()}{skip_str} | "
+            f"conf={t['confidence']:.0%} | edge={t['edge']:+.1%}{outcome_str}"
+        )
+        reason = t.get("full_reasoning") or t.get("reasoning") or ""
+        if reason:
+            lines.append(f"  Analysis: {reason[:300]}")
+        if t.get("skip_reason"):
+            lines.append(f"  Skip reason: {t['skip_reason'][:150]}")
+    return "\n".join(lines)
+
+
 def get_daily_pnl(db_path: str | None = None, day: datetime | None = None) -> float:
-    """Sum realized PnL for trades recorded on a given UTC day.
-
-    Args:
-        db_path: Path to the SQLite database file. Defaults to `DB_PATH`.
-        day: The UTC day to sum. Defaults to today.
-
-    Returns:
-        The sum of `pnl_usd` for trades created on that day (0.0 if none).
-    """
     target_day = (day or datetime.now(UTC)).date().isoformat()
     with _connect(db_path) as conn:
         row = conn.execute(
@@ -168,33 +212,25 @@ def get_daily_pnl(db_path: str | None = None, day: datetime | None = None) -> fl
 
 
 def get_recent_trades(limit: int = 50, db_path: str | None = None) -> list[dict[str, Any]]:
-    """Fetch the most recently recorded trades.
-
-    Args:
-        limit: Maximum number of rows to return.
-        db_path: Path to the SQLite database file. Defaults to `DB_PATH`.
-
-    Returns:
-        A list of trade row dicts ordered by `created_at` descending.
-    """
     with _connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT * FROM trades ORDER BY created_at DESC, id DESC LIMIT ?",
             (limit,),
         ).fetchall()
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            d = dict(row)
+            if d.get("sources") and isinstance(d["sources"], str):
+                try:
+                    d["sources"] = json.loads(d["sources"])
+                except Exception:
+                    d["sources"] = []
+            result.append(d)
+        return result
 
 
 def get_open_position_count(db_path: str | None = None) -> int:
-    """Count trades currently recorded as open.
-
-    Args:
-        db_path: Path to the SQLite database file. Defaults to `DB_PATH`.
-
-    Returns:
-        The number of trades with `status = "open"`.
-    """
     with _connect(db_path) as conn:
         row = conn.execute("SELECT COUNT(*) FROM trades WHERE status = 'open'").fetchone()
         return int(row[0])

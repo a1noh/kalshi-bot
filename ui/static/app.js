@@ -77,16 +77,39 @@ async function refreshTrades() {
 
   for (const t of trades) {
     const row = document.createElement("tr");
+
+    // outcome badge
+    const outcomeEl = document.createElement("td");
+    if (t.outcome) {
+      const b = document.createElement("span");
+      b.className = `badge ${t.outcome === "win" ? "yes" : t.outcome === "loss" ? "no" : "skip"}`;
+      b.textContent = t.outcome.toUpperCase();
+      outcomeEl.appendChild(b);
+    } else {
+      outcomeEl.textContent = "-";
+    }
+
+    // sources tooltip on reasoning cell
+    const sources = Array.isArray(t.sources) ? t.sources : [];
+    const fullReason = t.full_reasoning || t.reasoning || "";
+    const reasonEl = document.createElement("td");
+    reasonEl.className = "reasoning";
+    reasonEl.textContent = fullReason;
+    reasonEl.title = sources.length
+      ? `${fullReason}\n\nSources:\n${sources.join("\n")}`
+      : fullReason;
+
     [
-      t.created_at, t.market_ticker, t.side, formatUsd(t.size_usd),
-      t.confidence?.toFixed(2) ?? "-", t.edge?.toFixed(3) ?? "-",
-      t.status, t.reasoning ?? "",
-    ].forEach((val, i) => {
+      t.created_at?.slice(0, 16), t.market_ticker, t.side, formatUsd(t.size_usd),
+      t.confidence?.toFixed(2) ?? "-", t.edge?.toFixed(3) ?? "-", t.status,
+    ].forEach(val => {
       const td = document.createElement("td");
-      td.textContent = val;
-      if (i === 7) { td.className = "reasoning"; td.title = val; }
+      td.textContent = val ?? "-";
       row.appendChild(td);
     });
+
+    row.appendChild(outcomeEl);
+    row.appendChild(reasonEl);
     body.appendChild(row);
   }
 }

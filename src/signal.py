@@ -51,6 +51,7 @@ class TradeSignal(BaseModel):
 def generate_signal(
     market: dict[str, Any],
     client: anthropic.Anthropic | None = None,
+    trade_history: str = "",
 ) -> TradeSignal:
     """Ask Claude for a trading signal on a candidate market.
 
@@ -80,10 +81,14 @@ def generate_signal(
         },
     ]
 
+    system = SYSTEM_PROMPT
+    if trade_history:
+        system = f"{SYSTEM_PROMPT}\n\n{trade_history}"
+
     response = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
+        system=system,
         messages=[{"role": "user", "content": _build_prompt(market)}],
         tools=tools,
     )
