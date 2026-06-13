@@ -19,23 +19,18 @@ from src.order_book import OrderBookSummary
 load_dotenv()
 
 MODEL = "claude-sonnet-4-6"
-MAX_TOKENS = 4096
+MAX_TOKENS = 1024
 
 SYSTEM_PROMPT = """\
-You are a careful, risk-aware trading analyst evaluating Kalshi prediction \
-market contracts.
+You are a trading analyst evaluating a Kalshi prediction market contract.
 
-Do 2-3 web searches to find current relevant information, then immediately \
-call submit_signal. Do not do more than 3 searches.
+Do exactly ONE web search to find the most relevant current information, \
+then immediately call submit_signal. Never do more than one search.
 
-Form your own estimate of the true probability that the market resolves "yes". \
-The "edge" is your_probability minus the market's yes mid price. \
-Only recommend a trade when you have clear, well-sourced edge. \
-If uncertain, set "skip" to true — skipping is the correct default.
-
-"side" is the side you'd buy ("yes" or "no"). \
-"size_usd" must not exceed the max bet size given in the prompt. \
-"sources" must list the URLs you used.\
+Estimate the true probability the market resolves "yes". \
+Edge = your_probability minus the yes mid price. \
+Keep reasoning under 2 sentences. \
+If uncertain, set skip=true.\
 """
 
 
@@ -74,10 +69,10 @@ def generate_signal(
         pydantic.ValidationError: If Claude's response does not match the
             `TradeSignal` schema.
     """
-    client = client or anthropic.Anthropic(timeout=60.0)
+    client = client or anthropic.Anthropic(timeout=45.0)
 
     tools: list[Any] = [
-        {"type": "web_search_20260209", "name": "web_search"},
+        {"type": "web_search_20260209", "name": "web_search", "max_uses": 1},
         {
             "name": "submit_signal",
             "description": "Submit the final trading signal after completing research.",

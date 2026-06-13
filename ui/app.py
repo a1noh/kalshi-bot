@@ -118,6 +118,18 @@ def _anthropic_error_msg(exc: Exception) -> str:
     return str(exc)
 
 
+def _market_display_title(market: dict[str, Any]) -> str:
+    """Return a title that distinguishes markets in the same series."""
+    title = market.get("title", market.get("ticker", ""))
+    # For binary markets, append yes_sub_title if it contains a price/threshold
+    yes_sub = market.get("yes_sub_title", "")
+    no_sub = market.get("no_sub_title", "")
+    sub = yes_sub or no_sub
+    if sub and sub.lower() not in title.lower():
+        return f"{title} — {sub}"
+    return title
+
+
 def _run_discovery(max_bet_usd: float) -> list[dict[str, Any]]:
     """Return the top open Kalshi markets by volume — no Claude call needed.
 
@@ -166,7 +178,7 @@ def _run_discovery(max_bet_usd: float) -> list[dict[str, Any]]:
             continue
         results.append({
             "ticker": ticker,
-            "title": m.get("title", ticker),
+            "title": _market_display_title(m),
             "size_usd": max_bet_usd,
             "mid_price": ob.mid_price,
             "best_bid": ob.best_bid,
