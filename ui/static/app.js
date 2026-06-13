@@ -423,7 +423,7 @@ function buildSignalContent(wizard, opp, signal) {
 
       const confirm = document.createElement("button");
       confirm.className = "big-btn confirm-bet-btn";
-      confirm.textContent = `Confirm: ${side.toUpperCase()} $${amount % 1 === 0 ? amount : amount.toFixed(2)} on ${opp.ticker}`;
+      confirm.textContent = `Confirm: ${signal.side.toUpperCase()} $${amount % 1 === 0 ? amount : amount.toFixed(2)} on ${opp.ticker}`;
       confirm.addEventListener("click", () => {
         betOptions.querySelectorAll(".bet-opt-btn").forEach(b => { b.disabled = true; });
         confirm.disabled = true;
