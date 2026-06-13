@@ -72,7 +72,7 @@ def generate_signal(
     client = client or anthropic.Anthropic(timeout=45.0)
 
     tools: list[Any] = [
-        {"type": "web_search_20260209", "name": "web_search", "max_uses": 1},
+        {"type": "web_search_20260209", "name": "web_search"},
         {
             "name": "submit_signal",
             "description": "Submit the final trading signal after completing research.",
