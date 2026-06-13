@@ -413,8 +413,23 @@ function buildSignalContent(wizard, opp, signal) {
     btn.append(amt, lbl);
 
     btn.addEventListener("click", () => {
-      betOptions.querySelectorAll(".bet-opt-btn").forEach(b => { b.disabled = true; });
-      handleBet(wizard, opp.ticker, signal.side, amount);
+      // Select this tile, show confirm button — don't fire immediately
+      betOptions.querySelectorAll(".bet-opt-btn").forEach(b => b.classList.remove("selected"));
+      btn.classList.add("selected");
+
+      // Remove any existing confirm button
+      const existing = div.querySelector(".confirm-bet-btn");
+      if (existing) existing.remove();
+
+      const confirm = document.createElement("button");
+      confirm.className = "big-btn confirm-bet-btn";
+      confirm.textContent = `Confirm: ${side.toUpperCase()} $${amount % 1 === 0 ? amount : amount.toFixed(2)} on ${opp.ticker}`;
+      confirm.addEventListener("click", () => {
+        betOptions.querySelectorAll(".bet-opt-btn").forEach(b => { b.disabled = true; });
+        confirm.disabled = true;
+        handleBet(wizard, opp.ticker, signal.side, amount, signal.confidence, signal.edge);
+      });
+      div.appendChild(confirm);
     });
 
     betOptions.appendChild(btn);
@@ -428,11 +443,11 @@ function buildSignalContent(wizard, opp, signal) {
 // Step 3 — place bet
 // ---------------------------------------------------------------------------
 
-async function handleBet(wizard, ticker, side, size_usd) {
+async function handleBet(wizard, ticker, side, size_usd, confidence, edge) {
   const step = createLoadingStep(wizard, `Placing ${side.toUpperCase()} bet on ${ticker}…`);
 
   try {
-    const result = await apiPost("/api/bet", { ticker, side, size_usd });
+    const result = await apiPost("/api/bet", { ticker, side, size_usd, confidence, edge });
     const order = result.order || {};
     const dryRun = result.dry_run;
 

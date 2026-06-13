@@ -132,6 +132,8 @@ class BetRequest(BaseModel):
     ticker: str
     side: Literal["yes", "no"]
     size_usd: float
+    confidence: float = 1.0
+    edge: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -542,9 +544,9 @@ def bet(body: BetRequest) -> dict[str, Any]:
     signal = TradeSignal(
         market_ticker=body.ticker,
         side=body.side,
-        confidence=1.0,
+        confidence=body.confidence,
         size_usd=body.size_usd,
-        edge=0.0,
+        edge=body.edge,
         reasoning="Manual bet placed via dashboard",
         sources=[],
         skip=False,

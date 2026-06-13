@@ -33,6 +33,7 @@ class RiskManager:
     def __init__(
         self,
         min_confidence: float | None = None,
+        min_edge: float | None = None,
         max_bet_usd: float | None = None,
         max_open_positions: int | None = None,
         daily_loss_limit_usd: float | None = None,
@@ -52,6 +53,9 @@ class RiskManager:
         """
         self.min_confidence = (
             min_confidence if min_confidence is not None else float(os.environ.get("MIN_CONFIDENCE", "0.70"))
+        )
+        self.min_edge = (
+            min_edge if min_edge is not None else float(os.environ.get("MIN_EDGE", "0.08"))
         )
         self.max_bet_usd = (
             max_bet_usd if max_bet_usd is not None else float(os.environ.get("MAX_BET_USD", "10"))
@@ -85,7 +89,13 @@ class RiskManager:
         if signal.confidence < self.min_confidence:
             return RiskDecision(
                 approved=False,
-                reason=f"confidence {signal.confidence} below MIN_CONFIDENCE {self.min_confidence}",
+                reason=f"confidence {signal.confidence:.0%} below minimum {self.min_confidence:.0%}",
+            )
+
+        if abs(signal.edge) < self.min_edge:
+            return RiskDecision(
+                approved=False,
+                reason=f"edge {signal.edge:+.1%} below minimum ±{self.min_edge:.0%} — not worth the spread",
             )
 
         if signal.size_usd <= 0:

@@ -133,6 +133,15 @@ td.reasoning {
 .big-btn:hover    { background: #264d3b; }
 .big-btn:disabled { opacity: 0.4; cursor: default; }
 
+.confirm-bet-btn {
+  background: #3a1e1e;
+  border-color: #7a3a3a;
+  color: #f0b6b6;
+  margin-top: 0.6rem;
+}
+.confirm-bet-btn:hover    { background: #4d2626; }
+.confirm-bet-btn:disabled { opacity: 0.4; cursor: default; }
+
 /* ── Opportunity list ────────────────────────────────── */
 
 .opp-list {
