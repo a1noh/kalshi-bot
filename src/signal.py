@@ -8,6 +8,7 @@ there's a tradeable edge.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from typing import Any, Literal
 
 import anthropic
@@ -98,6 +99,66 @@ def generate_signal(
             return TradeSignal.model_validate(block.input)
 
     raise ValueError("Claude did not call submit_signal — check model output")
+
+
+def stream_signal_events(
+    market: dict[str, Any],
+    client: anthropic.Anthropic | None = None,
+    trade_history: str = "",
+) -> Iterator[dict[str, Any]]:
+    """Stream research events as dicts.
+
+    Yields:
+        {"type": "progress", "text": str}   — status updates
+        {"type": "thinking", "text": str}   — Claude's visible text
+        {"type": "signal", "signal": TradeSignal}
+        {"type": "error", "text": str}
+    """
+    client = client or anthropic.Anthropic(timeout=45.0)
+
+    system = SYSTEM_PROMPT
+    if trade_history:
+        system = f"{SYSTEM_PROMPT}\n\n{trade_history}"
+
+    tools: list[Any] = [
+        {"type": "web_search_20260209", "name": "web_search"},
+        {
+            "name": "submit_signal",
+            "description": "Submit the final trading signal after completing research.",
+            "input_schema": _signal_schema(),
+        },
+    ]
+
+    try:
+        with client.messages.stream(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=system,
+            messages=[{"role": "user", "content": _build_prompt(market)}],
+            tools=tools,
+        ) as stream:
+            for event in stream:
+                etype = type(event).__name__
+                if etype == "RawContentBlockStartEvent":
+                    block = getattr(event, "content_block", None)
+                    if block and getattr(block, "type", "") == "server_tool_use":
+                        if getattr(block, "name", "") == "web_search":
+                            yield {"type": "progress", "text": "Searching the web…"}
+                elif etype == "RawContentBlockDeltaEvent":
+                    delta = getattr(event, "delta", None)
+                    if delta and getattr(delta, "text", ""):
+                        yield {"type": "thinking", "text": delta.text}
+            final = stream.get_final_message()
+
+        for block in reversed(final.content):
+            if block.type == "tool_use" and block.name == "submit_signal":
+                yield {"type": "signal", "signal": TradeSignal.model_validate(block.input)}
+                return
+
+        yield {"type": "error", "text": "Claude did not return a signal — try again"}
+
+    except Exception as exc:
+        yield {"type": "error", "text": str(exc)}
 
 
 def _build_prompt(market: dict[str, Any]) -> str:

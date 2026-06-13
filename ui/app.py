@@ -24,6 +24,11 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import anthropic as _anthropic
+import json as _json
+
+from fastapi.responses import StreamingResponse
+
 from src.executor import place_order
 from src.kalshi_client import KalshiClient
 from src.logger import (
@@ -37,7 +42,7 @@ from src.logger import (
 )
 from src.order_book import get_order_book_summary
 from src.risk import RiskManager
-from src.signal import TradeSignal, generate_signal
+from src.signal import TradeSignal, generate_signal, stream_signal_events
 
 _log = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -472,6 +477,58 @@ def research(body: ResearchRequest) -> dict[str, Any]:
     })
 
     return signal.model_dump()
+
+
+@app.post("/api/research/stream", dependencies=[Depends(_require_auth)])
+def research_stream(body: ResearchRequest) -> StreamingResponse:
+    """Stream research events as SSE. Emits progress, thinking, and signal events."""
+    try:
+        market = get_client().get_market(body.ticker)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=f"Market not found: {exc}") from exc
+    try:
+        order_book = get_order_book_summary(get_client(), body.ticker)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Order book fetch failed: {exc}") from exc
+
+    series = body.ticker.split("-")[0]
+    history = format_history_for_claude(get_trade_history(series=series, limit=6))
+
+    def _sse():
+        signal = None
+        for evt in stream_signal_events(
+            {**market, "order_book": order_book},
+            trade_history=history,
+        ):
+            if evt["type"] == "signal":
+                signal = evt["signal"]
+                yield f"data: {_json.dumps({'type': 'signal', 'signal': signal.model_dump()})}\n\n"
+            elif evt["type"] == "error":
+                yield f"data: {_json.dumps({'type': 'error', 'text': _anthropic_error_msg(Exception(evt['text']))})}\n\n"
+                return
+            else:
+                yield f"data: {_json.dumps(evt)}\n\n"
+
+        if signal:
+            record_trade({
+                "market_ticker": body.ticker,
+                "side": signal.side,
+                "size_usd": signal.size_usd,
+                "confidence": signal.confidence,
+                "edge": signal.edge,
+                "status": "skipped" if signal.skip else "researched",
+                "reasoning": signal.reasoning[:200] if signal.reasoning else "",
+                "full_reasoning": signal.reasoning,
+                "sources": signal.sources,
+                "skip_reason": signal.skip_reason,
+                "series": series,
+            })
+
+    return StreamingResponse(
+        _sse(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/bet", dependencies=[Depends(_require_auth)])

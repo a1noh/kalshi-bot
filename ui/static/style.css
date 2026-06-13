@@ -165,6 +165,29 @@ td.reasoning {
 .opp-row-title { flex: 1; }
 .opp-row-meta  { color: #555; font-size: 0.8rem; white-space: nowrap; }
 
+/* ── Streaming research log ──────────────────────────── */
+
+.stream-log {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.stream-log .step-loading::before {
+  content: "› ";
+  color: #444;
+}
+
+.stream-thinking {
+  color: #888;
+  font-size: 0.86rem;
+  font-style: italic;
+  line-height: 1.55;
+  margin: 0.1rem 0 0 1rem;
+  max-height: 8rem;
+  overflow: hidden;
+}
+
 /* ── Signal result ───────────────────────────────────── */
 
 .signal-header {

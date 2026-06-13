@@ -267,25 +267,84 @@ function buildOppsContent(wizard, opps) {
 // ---------------------------------------------------------------------------
 
 async function handleResearch(wizard, opp) {
-  const step = createLoadingStep(wizard, `Researching ${opp.ticker}… (~30-60 s)`);
+  const step = createStep(wizard);
+
+  // Live thinking area
+  const thinkingEl = document.createElement("div");
+  thinkingEl.className = "stream-log";
+  step.appendChild(thinkingEl);
+
+  function addLine(text, cls) {
+    const p = document.createElement("p");
+    p.className = cls || "step-loading";
+    p.textContent = text;
+    thinkingEl.appendChild(p);
+    step.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  addLine(`Researching ${opp.ticker}…`);
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 300000);
 
   try {
-    const res = await fetch("/api/research", {
+    const res = await fetch("/api/research/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ticker: opp.ticker }),
       signal: controller.signal,
     });
-    clearTimeout(timeout);
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(err.detail || res.statusText);
     }
-    const signal = await res.json();
-    step.replaceChildren(buildSignalContent(wizard, opp, signal));
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    let signal = null;
+    let thinkingText = "";
+    let thinkingP = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      const chunks = buf.split("\n\n");
+      buf = chunks.pop();
+
+      for (const chunk of chunks) {
+        if (!chunk.startsWith("data: ")) continue;
+        let evt;
+        try { evt = JSON.parse(chunk.slice(6)); } catch { continue; }
+
+        if (evt.type === "progress") {
+          addLine(evt.text, "step-loading");
+          thinkingP = null; thinkingText = "";
+        } else if (evt.type === "thinking") {
+          thinkingText += evt.text;
+          if (!thinkingP) {
+            thinkingP = document.createElement("p");
+            thinkingP.className = "stream-thinking";
+            thinkingEl.appendChild(thinkingP);
+          }
+          thinkingP.textContent = thinkingText;
+          step.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        } else if (evt.type === "signal") {
+          signal = evt.signal;
+        } else if (evt.type === "error") {
+          throw new Error(evt.text);
+        }
+      }
+    }
+
+    clearTimeout(timeout);
+    if (signal) {
+      step.replaceChildren(buildSignalContent(wizard, opp, signal));
+    } else {
+      setStepError(step, "No signal returned — try again");
+    }
   } catch (err) {
     clearTimeout(timeout);
     setStepError(step, err.message);
